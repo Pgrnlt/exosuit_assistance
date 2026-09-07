@@ -3,11 +3,11 @@
 
 This repository implements an **admittance-based controller** designed to assist human motion using an exosuit. The controller is structured as a **PID-like admittance** with the form:
 
-\[
-\frac{f}{w} = P + Ds + \frac{I}{s}
-\]
+$$
+\frac{f}{\omega} = P + Ds + \frac{I}{s}
+$$
 
-where \( f \) is the assistance force, \( w \) is the angular velocity, and \( P \), \( D \), and \( I \) are the proportional, derivative, and integral gains, respectively.
+where $$f$$ is the cable tension, $$\omega$$ is the angular velocity of the motor, and \( P \), \( D \), and \( I \) are the proportional, derivative, and integral gains, respectively.
 
 ---
 
