@@ -1,1 +1,31 @@
-# exosuit_assistance
+
+# Admittance Controller for Exosuit Assistance
+
+This repository implements an **admittance-based controller** designed to assist human motion using an exosuit. The controller is structured as a **PID-like admittance** with the form:
+
+\[
+\frac{f}{w} = P + Ds + \frac{I}{s}
+\]
+
+where \( f \) is the assistance force, \( w \) is the angular velocity, and \( P \), \( D \), and \( I \) are the proportional, derivative, and integral gains, respectively.
+
+---
+
+## Features
+
+### **1. Elbow Flexion Assistance**
+The `Elbow_flexion` folder contains the controller for assisting elbow flexion. The detection method relies on **gravity compensation**, and joint torques are estimated using one of the following approaches:
+- **IMU-based estimation**: Combines inertial measurement units (IMUs) with a static biomechanical model.
+- **sEMG-based estimation**: Uses surface electromyography (sEMG) signals and EMG-to-torque conversion models.
+
+### **2. Shoulder Flexion Assistance**
+The `Shoulder_flexion` folder provides the controller for assisting shoulder flexion.
+
+### **Real-Time Implementation**
+The code is optimized for **real-time execution** on an **STM32 Nucleo-F722ZE** microcontroller.
+
+---
+
+## Demo Video
+A demonstration of the exosuit assistance in action is available below:
+https://github.com/user-attachments/assets/a28d514d-6c63-48ae-a90b-9a2c3bd74e08
