@@ -7,7 +7,7 @@ $$
 \frac{f}{\omega} = P + Ds + \frac{I}{s}
 $$
 
-where $$f$$ is the cable tension, $$\omega$$ is the angular velocity of the motor, and \( P \), \( D \), and \( I \) are the proportional, derivative, and integral gains, respectively.
+where $$f$$ is the cable tension, $$\omega$$ is the angular velocity of the motor, and $$P$$, $$D$$, and $$I$$ are the proportional, derivative, and integral gains, respectively.
 
 ---
 
@@ -15,7 +15,7 @@ where $$f$$ is the cable tension, $$\omega$$ is the angular velocity of the moto
 
 ### **1. Elbow Flexion Assistance**
 The `Elbow_flexion` folder contains the controller for assisting elbow flexion. The detection method relies on **gravity compensation**, and joint torques are estimated using one of the following approaches:
-- **IMU-based estimation**: Combines inertial measurement units (IMUs) with a static biomechanical model.
+- **IMU-based estimation**: Combines inertial measurement units (IMUs) with a static model.
 - **sEMG-based estimation**: Uses surface electromyography (sEMG) signals and EMG-to-torque conversion models.
 
 ### **2. Shoulder Flexion Assistance**
