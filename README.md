@@ -28,4 +28,8 @@ The code is optimized for **real-time execution** on an **STM32 Nucleo-F722ZE** 
 
 ## Demo Video
 A demonstration of the exosuit assistance in action is available below:
-https://github.com/user-attachments/assets/a28d514d-6c63-48ae-a90b-9a2c3bd74e08
+
+
+https://github.com/user-attachments/assets/4cb50827-204a-4083-b282-c6bd32778ed3
+
+
