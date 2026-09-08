@@ -7,7 +7,7 @@ $$
 \frac{f}{\omega} = P + Ds + \frac{I}{s}
 $$
 
-where $$f$$ is the cable tension, $$\omega$$ is the angular velocity of the motor, and $$P$$, $$D$$, and $$I$$ are the proportional, derivative, and integral gains, respectively.
+where $$f$$ is the needed tension, $$\omega$$ is the angular velocity of the motor, and $$P$$, $$D$$, and $$I$$ are the proportional, derivative, and integral gains, respectively.
 
 ---
 
