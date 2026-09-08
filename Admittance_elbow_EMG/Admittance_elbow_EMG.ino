@@ -4,39 +4,40 @@
 #include "WProgram.h"
 #endif
 
-// Bibliothèques nécessaires
+// Required libraries
 #include <Adafruit_BNO055.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <utility/imumaths.h>
 #include "STM32TimerInterrupt.h"
-//  Librairie de filtrage EMG
-#include <EMGFiltersSTM32ENV_FullfreqHz.h>
+// EMG filtering library
+#include "EMG_filtering_STM32.h"
 #include <mcp_can.h>
 #include <SPI.h>
 
-// Initialisation des timers
-STM32Timer ITimer0(TIM1);   // IMU
-// Timer dédié à l'acquisition EMG (1kHz)
-STM32Timer ITimer1(TIM3);   // EMG
-STM32Timer ITimer2(TIM2);   // Envoi CAN (contrôleur en admittance)
+// Timer initialization
+STM32Timer ITimer0(TIM1);   // IMU timer
+STM32Timer ITimer1(TIM3);   // EMG acquisition timer (1kHz)
+STM32Timer ITimer2(TIM2);   // CAN send timer (admittance controller)
 
-//  Définition des variables EMG (2 capteurs seulement)
+// EMG sensor configuration (2 sensors only)
 #define TIMER1_INTERVAL_MS 1
 #define BICEPS_PIN A1
 #define TRICEPS_PIN A0
 
-//  Objets de filtrage EMG
-EMGFilters muscle_biceps;
-EMGFilters muscle_triceps;
+// EMG filter objects
+EMGFilter  muscle_biceps;
+EMGFilter  muscle_triceps;
 int sampleRate = 1000;
-int humFreq = 50;
-int EnvFreq = 2;
+int NotchFreq = 50;
+float HP_freq=20;
+float LP_freq=150;
+int EnvFreq =3;
 volatile bool flag_EMG_ready = false;
 volatile float biceps_filtered = 0.0;
 volatile float triceps_filtered = 0.0;
 
-// Variables IMU
+// IMU variables
 #define TIMER0_INTERVAL_MS 10
 Adafruit_BNO055 bno_arm = Adafruit_BNO055(55, 0x29, &Wire);
 Adafruit_BNO055 bno_forearm = Adafruit_BNO055(-1, 0x28, &Wire);
@@ -56,7 +57,7 @@ float alpha = 0.95;
 float beta = 0.95;
 volatile bool flag_BNO_ready = false;
 
-// Paramètres géométriques
+// Geometric parameters
 float p1e_x = 0.065;
 float p1e_y = -0.055;
 float p1e_z = 0;
@@ -64,46 +65,45 @@ float p2e_x = 0.085;
 float p2e_y = 0;
 float p2e_z = 0.055;
 
-// Paramètres du modèle de Hill pour biceps (0) et triceps (1)
+// Hill model parameters for biceps (0) and triceps (1)
 float A_factor[2] = {1.0, -4.44};
 float Fiso[2] = {6.52, 1.18};
 float lopt[2] = {0.2335, 0.228};
 float v_opt[2] = {-0.0013, -0.026};
 float alpha_opt[2] = {0.0, 0.6235};
 
-// Variables pour le modèle musculaire / géométrie (conservées : utilisées aussi par l'admittance IMU)
-//  tau_EMG n'est plus calculé (dépendait de Convert_EMGtoTorque)
-float tau_EMG = 0.0;
+// Muscle model variables (retained for IMU-based admittance)
+float tau_EMG = 0.0;  // EMG-based torque (commented out by default)
 float l_m[2] = {0.0, 0.0};
 float v_l[2] = {0.0, 0.0};
-float r[2] = {1,1};
+float r[2] = {1, 1};
 
-// Variables pour le contrôle moteur CAN
+// CAN motor control variables
 #define CAN_INT 2
 #define SPI_CS_PIN 10
 MCP_CAN CAN(SPI_CS_PIN);
 volatile bool flag_SEND_CAN = false;
 
-// Timer dédié à l'envoi CAN (contrôleur en admittance)
-#define TIMER2_INTERVAL_MS 10  // fréquence d'envoi CAN / calcul admittance
+// Timer for CAN send (admittance controller)
+#define TIMER2_INTERVAL_MS 10  // CAN send frequency / admittance calculation
 
-// Paramètres du contrôleur en admittance
-float m_FARM = 0.780;
+// Admittance controller parameters
+float m_FARM = 1.560;
 float l_FARM = 0.28;
-float B= 0.3*1;//0.11
-float D=0.1*1;//1.29
-float M=0.001*1;//0.00000286
+float B = 0.3 * 1;  // Damping coefficient
+float D = 0.1 * 1;  // Integral gain
+float M = 0.001 * 1;  // Derivative gain
 float f_ref = 0.0;
 float f_out = 0.0;
 float f_des = 0.0;
 float f_dot_des = 0.0;
 float f_prev = 0.0;
 float int_f_des = 0.0;
-float R=1;
+float R = 1;
 #define F_MAX 100.0f
 #define INT_F_MAX ((V_MAX - B * F_MAX) / D * 0.5f)
 
-// Limites des paramètres moteurs
+// Motor limits
 #define P_MIN -12.5f
 #define P_MAX 12.5f
 #define V_MIN -45.5f
@@ -121,14 +121,14 @@ volatile float t_filt = 0.0;
 float theta = 0.0f;
 float tau_ref = 0.0f;
 
-// Seuil de sécurité pour éviter la division par un bras de levier proche de zéro
+// Safety threshold to avoid division by near-zero lever arm
 #define R0_MIN_ABS 0.001f
 
 void setup() {
   f_prev = 0.0;
   Serial.begin(115200);
 
-  // Initialisation du bus CAN
+  // Initialize CAN bus
   while (CAN_OK != CAN.begin(MCP_ANY, CAN_1000KBPS, MCP_16MHZ)) {
     Serial.println("CAN BUS Shield init fail");
     delay(5000);
@@ -136,13 +136,13 @@ void setup() {
   CAN.setMode(MCP_NORMAL);
   Serial.println("CAN BUS Shield init ok!");
 
-  // Initialisation des IMU
+  // Initialize IMUs
   if (!bno_arm.begin(OPERATION_MODE_IMUPLUS)) {
-    Serial.println("Échec de l'initialisation du BNO055 bras");
+    Serial.println("Failed to initialize arm BNO055");
     while (1);
   }
   if (!bno_forearm.begin(OPERATION_MODE_IMUPLUS)) {
-    Serial.println("Échec de l'initialisation du BNO055 avant_bras");
+    Serial.println("Failed to initialize forearm BNO055");
     while (1);
   }
   bno_arm.setExtCrystalUse(true);
@@ -152,29 +152,30 @@ void setup() {
   Serial.println("Wait 3s in reference position");
   delay(3000);
 
-  // Définition des quaternions de référence pour les IMU
+  // Set reference quaternions for IMUs
   ARM_initialQuat = bno_arm.getQuat();
   FARM_initialQuat = bno_forearm.getQuat();
   ARM_invInitialQuat = ARM_initialQuat.conjugate();
   FARM_invInitialQuat = FARM_initialQuat.conjugate();
   delay(5000);
-  // Initialisation des filtres EMG
-  muscle_biceps.init(sampleRate, humFreq, EnvFreq, true, true, true, true);
-  muscle_triceps.init(sampleRate, humFreq, EnvFreq, true, true, true, true);
 
-  // Phase d'initialisation des capteurs EMG pendant 15 secondes
-  Serial.println("Initialisation des capteurs EMG - Veillez à ne pas bouger...");
+  // Initialize EMG filters
+  muscle_biceps.init(sampleRate, NotchFreq, LP_freq,HP_freq ,EnvFreq);
+  muscle_triceps.init(sampleRate, NotchFreq, LP_freq,HP_freq ,EnvFreq);
+
+  // EMG sensor initialization phase (15 seconds)
+  Serial.println("Initializing EMG sensors - Do not move...");
   unsigned long startTime = millis();
-  while (millis() - startTime < 15000) {  // 15 secondes d'initialisation
+  while (millis() - startTime < 15000) {
     int biceps_value = analogRead(BICEPS_PIN);
     int triceps_value = analogRead(TRICEPS_PIN);
     biceps_filtered = muscle_biceps.update(biceps_value);
     triceps_filtered = muscle_triceps.update(triceps_value);
-    delay(1);  // Petit délai pour ne pas saturer le processeur
+    delay(1);
   }
-  Serial.println("Initialisation EMG terminée - Début des mesures");
+  Serial.println("EMG initialization complete - Starting measurements");
 
-  // --- Séquence d'initialisation automatique du moteur ---
+  // Motor initialization sequence
   Zero();
   Serial.println("Motors initialized! WAIT 2s");
   delay(2000);
@@ -184,158 +185,144 @@ void setup() {
   delay(2000);
   pack_cmd();
 
-  // Prétension des câbles
-  Serial.println("Prétension des câbles en cours...");
-  v_in = 1.0f; // Vitesse de 1 rad/s
+  // Cable pretensioning
+  Serial.println("Pretensioning cables...");
+  v_in = 1.0f;  // Speed of 1 rad/s
   unsigned long tensionStart = millis();
-  while (millis() - tensionStart < 2000) { // 2 secondes de prétension
-      pack_cmd();
-      delay(10);
+  while (millis() - tensionStart < 2000) {
+    pack_cmd();
+    delay(10);
   }
-  v_in = 0.0f; // Arrêt des moteurs
+  v_in = 0.0f;  // Stop motors
   pack_cmd();
-  Serial.println("Prétension des câbles terminée !");
-  // --- Fin séquence d'initialisation automatique ---
+  Serial.println("Cable pretensioning complete!");
 
-  // Configuration des interruptions temporelles
+  // Configure timer interrupts
   ITimer0.attachInterruptInterval(TIMER0_INTERVAL_MS * 1000, IMU_ready);
-  //  Timer d'acquisition EMG
   ITimer1.attachInterruptInterval(TIMER1_INTERVAL_MS * 1000, EMG_ready);
   ITimer2.attachInterruptInterval(TIMER2_INTERVAL_MS * 1000, SEND_CAN);
 }
 
+// Low-pass filter
 float lowpass_filter(float filtered, float raw, float alpha) {
   return alpha * filtered + (1 - alpha) * raw;
 }
-float exponentialFilter(float t_raw, float t_filt_prev, float alpha ) {
-    return alpha * t_raw + (1 - alpha) * t_filt_prev;
-  }
+
+// Exponential filter
+float exponentialFilter(float t_raw, float t_filt_prev, float alpha) {
+  return alpha * t_raw + (1 - alpha) * t_filt_prev;
+}
+
+// Calculate lever arm (re)
 float calculer_re(float theta) {
-    // Calcul des termes trigonométriques (optimisation : éviter de recalculer cos/sin plusieurs fois)
-    float cos_theta = cos(theta);
-    float sin_theta = sin(theta);
+  float cos_theta = cos(theta);
+  float sin_theta = sin(theta);
 
-    // Calcul du numérateur : -(2*p1e_y*p2e_x*cos(theta) - 2*p1e_x*p2e_z*cos(theta) + 2*p1e_x*p2e_x*sin(theta) + 2*p1e_y*p2e_z*sin(theta))
-    float numerateur =
-        - (2 * p1e_y * p2e_x * cos_theta
-           - 2 * p1e_x * p2e_z * cos_theta
-           + 2 * p1e_x * p2e_x * sin_theta
-           + 2 * p1e_y * p2e_z * sin_theta);
+  float numerator = -(2 * p1e_y * p2e_x * cos_theta - 2 * p1e_x * p2e_z * cos_theta +
+                      2 * p1e_x * p2e_x * sin_theta + 2 * p1e_y * p2e_z * sin_theta);
 
-    // Calcul du dénominateur : 2 * sqrt(terme1^2 + terme2^2 + terme3^2)
-    // Terme 1 : (p2e_x - p1e_x*cos(theta) + p1e_y*sin(theta))
-    float terme1 = p2e_x - p1e_x * cos_theta + p1e_y * sin_theta;
+  float term1 = p2e_x - p1e_x * cos_theta + p1e_y * sin_theta;
+  float term2 = p1e_z + p2e_y;
+  float term3 = p1e_y * cos_theta - p2e_z + p1e_x * sin_theta;
 
-    // Terme 2 : (p1e_z + p2e_y)
-    float terme2 = p1e_z + p2e_y;
+  float denominator = 2 * sqrt(term1 * term1 + term2 * term2 + term3 * term3);
 
-    // Terme 3 : (p1e_y*cos(theta) - p2e_z + p1e_x*sin(theta))
-    float terme3 = p1e_y * cos_theta - p2e_z + p1e_x * sin_theta;
-
-    // Dénominateur : 2 * sqrt(terme1^2 + terme2^2 + terme3^2)
-    float denominateur = 2 * sqrt(terme1 * terme1 + terme2 * terme2 + terme3 * terme3);
-      // Protection contre la division par zéro
-    if (denominateur == 0.0) {
-        return 0.0;  // ou une autre valeur par défaut
-    }
-    // Calcul final de re
-    float re = numerateur / denominateur;
-
-    return re;
+  if (denominator == 0.0) {
+    return 0.0;
   }
-// Calcul OPTIMISÉ des longueurs musculaires, bras de levier et vitesses
-// Conservé : nécessaire à l'admittance basée sur l'IMU (r[0], tau_ref/r[0])
+
+  return numerator / denominator;
+}
+
+// Calculate muscle lengths, lever arms, and velocities
 void calculer_longueur_bras_levier_vitesse(float q4, float dq4) {
-    // Pré-calcul des fonctions trigonométriques (optimisation majeure)
-    float cos_q4 = cos(q4);
-    float sin_q4 = sin(q4);
+  float cos_q4 = cos(q4);
+  float sin_q4 = sin(q4);
 
-    // Calcul pour le biceps (fléchisseur)
-    float terme1 = p2e_x - p1e_x * cos_q4 + p1e_y * sin_q4;
-    float terme2 = p1e_z + p2e_y;
-    float terme3 = p1e_y * cos_q4 - p2e_z + p1e_x * sin_q4;
+  // Biceps (flexor) calculations
+  float term1 = p2e_x - p1e_x * cos_q4 + p1e_y * sin_q4;
+  float term2 = p1e_z + p2e_y;
+  float term3 = p1e_y * cos_q4 - p2e_z + p1e_x * sin_q4;
 
-    // Longueur du biceps
-    l_m[0] = sqrt(terme1 * terme1 + terme2 * terme2 + terme3 * terme3);
+  l_m[0] = sqrt(term1 * term1 + term2 * term2 + term3 * term3);
 
-    // Bras de levier du biceps (re = r[0])
-    float numerateur_re = -(2 * p1e_y * p2e_x * cos_q4 - 2 * p1e_x * p2e_z * cos_q4 +
-                           2 * p1e_x * p2e_x * sin_q4 + 2 * p1e_y * p2e_z * sin_q4);
-    r[0] = numerateur_re / (2 * l_m[0]);
+  float numerator_re = -(2 * p1e_y * p2e_x * cos_q4 - 2 * p1e_x * p2e_z * cos_q4 +
+                        2 * p1e_x * p2e_x * sin_q4 + 2 * p1e_y * p2e_z * sin_q4);
+  r[0] = numerator_re / (2 * l_m[0]);
 
-    // Sécurité : éviter une division par un bras de levier proche de zéro
-    if (fabs(r[0]) < R0_MIN_ABS) {
-        r[0] = 1.0f;
-    }
+  if (fabs(r[0]) < R0_MIN_ABS) {
+    r[0] = 1.0f;
+  }
 
-    // Vitesse du biceps
-    float numerateur_vle = dq4 * (2 * p1e_y * p2e_x * cos_q4 - 2 * p1e_x * p2e_z * cos_q4 +
-                                 2 * p1e_x * p2e_x * sin_q4 + 2 * p1e_y * p2e_z * sin_q4);
-    v_l[0] = numerateur_vle / (2 * l_m[0]);
+  float numerator_vle = dq4 * (2 * p1e_y * p2e_x * cos_q4 - 2 * p1e_x * p2e_z * cos_q4 +
+                               2 * p1e_x * p2e_x * sin_q4 + 2 * p1e_y * p2e_z * sin_q4);
+  v_l[0] = numerator_vle / (2 * l_m[0]);
 
-    // Calcul pour le triceps (extenseur)
-    l_m[1] = 0.0214f * q4 + 0.2782f;  // ltri = 0.0214*q4 + 0.2782
-    r[1] = - (0.0214f * cos_q4);       // rtri = -d(ltri)/dq4 (jacobien)
-    v_l[1] = 0.0214f * dq4;           // dltri = 0.0214*dq4
+  // Triceps (extensor) calculations
+  l_m[1] = 0.0214f * q4 + 0.2782f;
+  r[1] = -(0.0214f * cos_q4);
+  v_l[1] = 0.0214f * dq4;
 }
 
-// [EMG DESACTIVE POUR TEST] Conversion EMG -> couple (modèle de Hill), désactivée entièrement
-
+// [EMG DISABLED FOR TEST] Convert EMG to torque (Hill model)
 void Convert_EMGtoTorque(float biceps_data, float triceps_data) {
-    float fa[2] = {0};
-    float fv[2] = {0};
-    float fp[2] = {0};
-    float alpha_pen[2] = {0};
-    float lnorm[2] = {0};
-    float vnorm[2] = {0};
-    float a_measured[2] = {0};
-    float f_muscle[2] = {0};
 
-    float EMG_data[2] = {biceps_data, triceps_data};
+  float fa[2] = {0};
+  float fv[2] = {0};
+  float fp[2] = {0};
+  float alpha_pen[2] = {0};
+  float lnorm[2] = {0};
+  float vnorm[2] = {0};
+  float a_measured[2] = {0};
+  float f_muscle[2] = {0};
 
-    for (int i = 0; i < 2; i++) {
-        lnorm[i] = l_m[i] / lopt[i];
-        vnorm[i] = v_l[i] / v_opt[i];
-        alpha_pen[i] = asin(sin(alpha_opt[i]) / lnorm[i]);
+  float EMG_data[2] = {biceps_data, triceps_data};
+
+  for (int i = 0; i < 2; i++) {
+    lnorm[i] = l_m[i] / lopt[i];
+    vnorm[i] = v_l[i] / v_opt[i];
+    alpha_pen[i] = asin(sin(alpha_opt[i]) / lnorm[i]);
+  }
+
+  for (int i = 0; i < 2; i++) {
+    a_measured[i] = (exp(A_factor[i] * EMG_data[i] / 50) - 1.0f) / (exp(A_factor[i]) - 1.0f);
+  }
+
+  for (int i = 0; i < 2; i++) {
+    fa[i] = max(0.0f, (((2.0269f * lnorm[i] - 8.8788f) * lnorm[i] + 11.4493f) * lnorm[i] - 3.6147f));
+    fp[i] = max(0.0f, (((((-4.966f * lnorm[i] + 29.027f) * lnorm[i] - 64.9f) * lnorm[i] + 70.72f) * lnorm[i] - 37.97f) * lnorm[i] + 8.086f));
+    fv[i] = 2.0f / (1.0f + exp(-6.0f * vnorm[i]));
+    if (vnorm[i] < -1.0f) {
+      fv[i] = 2.0f / (1.0f + exp(6.0f));
+    } else if (vnorm[i] > -(1.0f / 6.0f) * log(-1.0f + 2.0f / 1.4f)) {
+      fv[i] = 1.4f;
     }
+    f_muscle[i] = cos(alpha_pen[i]) * Fiso[i] * (fa[i] * fv[i] * a_measured[i] + fp[i]);
+  }
 
-    for (int i = 0; i < 2; i++) {
-        a_measured[i] = (exp(A_factor[i] * EMG_data[i]/50) - 1.0f) / (exp(A_factor[i]) - 1.0f);
-    }
-
-    for (int i = 0; i < 2; i++) {
-        fa[i] = max(0.0f, (((2.0269f * lnorm[i] - 8.8788f) * lnorm[i] + 11.4493f) * lnorm[i] - 3.6147f));
-        fp[i] = max(0.0f, (((((-4.966f * lnorm[i] + 29.027f) * lnorm[i] - 64.9f) * lnorm[i] + 70.72f) * lnorm[i] - 37.97f) * lnorm[i] + 8.086f));
-        fv[i] = 2.0f / (1.0f + exp(-6.0f * vnorm[i]));
-        if (vnorm[i] < -1.0f) {
-            fv[i] = 2.0f / (1.0f + exp(6.0f));
-        } else if (vnorm[i] > -(1.0f / 6.0f) * log(-1.0f + 2.0f / 1.4f)) {
-            fv[i] = 1.4f;
-        }
-        f_muscle[i] = cos(alpha_pen[i]) * Fiso[i] * (fa[i] * fv[i] * a_measured[i] + fp[i]);
-    }
-
-    tau_EMG = 0.0f;
-    for (int i = 0; i < 2; i++) {
-        tau_EMG += f_muscle[i] * r[i];
-    }
+  tau_EMG = 0.0f;
+  for (int i = 0; i < 2; i++) {
+    tau_EMG += f_muscle[i] * r[i];
+  }
+  
 }
 
-
+// IMU timer callback
 void IMU_ready() {
-    flag_BNO_ready = true;
+  flag_BNO_ready = true;
 }
 
-// [EMG DESACTIVE POUR TEST] Callback du timer d'acquisition EMG
+// EMG timer callback
 void EMG_ready() {
-    flag_EMG_ready = true;
+  flag_EMG_ready = true;
 }
 
+// CAN send timer callback
 void SEND_CAN() {
-    flag_SEND_CAN = true;
+  flag_SEND_CAN = true;
 }
 
-// Fonctions pour le contrôle moteur CAN
+// Motor control functions
 void EnterMotorMode() {
   byte buf[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC};
   CAN.sendMsgBuf(0x01, 0, 8, buf);
@@ -351,6 +338,7 @@ void Zero() {
   CAN.sendMsgBuf(0x01, 0, 8, buf);
 }
 
+// Pack motor command into CAN message
 void pack_cmd() {
   byte buf[8];
   float p_des = constrain(p_in, P_MIN, P_MAX);
@@ -376,6 +364,7 @@ void pack_cmd() {
   CAN.sendMsgBuf(0x01, 0, 8, buf);
 }
 
+// Unpack motor reply from CAN message
 void unpack_reply() {
   byte len = 0;
   byte buf[8];
@@ -390,10 +379,11 @@ void unpack_reply() {
   p_out = uint_to_float(p_int, P_MIN, P_MAX, 16);
   v_out = uint_to_float(v_int, V_MIN, V_MAX, 12);
   t_out = uint_to_float(i_int, T_MIN, T_MAX, 12);
-  T = T_int - 40; // Plage de température : -40 à 215°C
+  T = T_int - 40; // Temperature range: -40 to 215°C
   error = error_int;
 }
 
+// Convert float to unsigned int
 unsigned int float_to_uint(float x, float x_min, float x_max, float bits) {
   float span = x_max - x_min;
   float offset = x_min;
@@ -402,6 +392,7 @@ unsigned int float_to_uint(float x, float x_min, float x_max, float bits) {
   return 0;
 }
 
+// Convert unsigned int to float
 float uint_to_float(unsigned int x_int, float x_min, float x_max, int bits) {
   float span = x_max - x_min;
   float offset = x_min;
@@ -415,6 +406,7 @@ void loop() {
   char rc;
   rc = Serial.read();
 
+  // IMU data processing
   if (flag_BNO_ready) {
     flag_BNO_ready = false;
     float deltaTime = 0.010;
@@ -433,70 +425,68 @@ void loop() {
     FARM_prev_w_rad_s = lowpass_filter(FARM_prev_w_rad_s, FARM_w_rad_s, alpha);
 
     theta = FARM_euler.x() - ARM_euler.x();
-    float dq4 = FARM_prev_w_rad_s - ARM_prev_w_rad_s;  // Vitesse angulaire du coude
+    float dq4 = FARM_prev_w_rad_s - ARM_prev_w_rad_s;  // Elbow angular velocity
 
-    tau_ref = m_FARM * l_FARM * sin(theta) * 9.81;
+    tau_ref = m_FARM * l_FARM*0.5* sin(theta) * 9.81;  // Gravity compensation torque
 
     calculer_longueur_bras_levier_vitesse(theta, dq4);
-    // R=calculer_re(theta);
-    f_ref = 0.8 * tau_ref / r[0];
-    // f_ref=0.8*tau_EMG /r[0];
-    if (f_ref < 2) f_ref = 2.0f;  // Clamp de sécurité sur f_ref
+    f_ref = 0.8 * tau_ref / r[0];  // Reference force based on IMU
+    // Uncomment the following line to use EMG-based torque instead:
+    // f_ref = 0.8 * tau_EMG / r[0];
+
+    if (f_ref < 2) f_ref = 2.0f;  // Safety clamp on f_ref
     ARM_prevEulerX = ARM_euler.x();
     FARM_prevEulerX = FARM_euler.x();
-
   }
 
-  // [EMG DESACTIVE POUR TEST] Acquisition et filtrage des signaux EMG
+  // EMG acquisition and filtering
   if (flag_EMG_ready) {
     flag_EMG_ready = false;
-  
+
     int biceps_value = analogRead(BICEPS_PIN);
     int triceps_value = analogRead(TRICEPS_PIN);
     biceps_filtered = muscle_biceps.update(biceps_value);
     triceps_filtered = muscle_triceps.update(triceps_value);
-  
   }
 
-  if(rc=='f') // STOP MOTORS
-    {
+  // Stop motors on 'f' command
+  if (rc == 'f') {
     ExitMotorMode();
     Serial.println("Motors turned OFF!");
-    }
-  // Gestion des commandes CAN
+  }
+
+  // CAN command management
   if (flag_SEND_CAN) {
     flag_SEND_CAN = false;
-  
-    // Filtrage du couple mesuré
+
+    // Filter measured torque
     if (t_out < 0) t_out = 0.0f;
     t_filt = exponentialFilter(t_out, t_filt, alpha_filter);
     if (t_filt < 0) t_filt = 0.0f;
 
-    // [EMG DESACTIVE POUR TEST] Calcul de la force désirée avec le couple EMG estimé
+    // Calculate EMG-based torque (commented out by default)
     Convert_EMGtoTorque(biceps_filtered, triceps_filtered);
-    f_out = t_filt / 0.015;  // Utilisation du bras de levier réel diamètre bobine(0.015m)
+    f_out = t_filt / 0.015;  // Use real lever arm (cable diameter: 0.015m)
 
-    // [EMG DESACTIVE POUR TEST] f_ref basé sur tau_EMG remplacé par tau_ref (IMU), le temps du test
+    // Calculate desired force (IMU-based by default)
+    f_des = f_ref - f_out;
 
-    f_des = f_ref - f_out; // Ajout du couple EMG estimé pour le coude
-
-    // Calcul de l'intégrale et de la dérivée de la force
+    // Calculate integral and derivative of force
     float Ts = TIMER2_INTERVAL_MS * 0.001;
     int_f_des += (f_des + f_prev) * Ts * 0.5;
     int_f_des = constrain(int_f_des, -INT_F_MAX, INT_F_MAX);
     f_dot_des = (f_des - f_prev) / Ts;
 
-    // Calcul de la vitesse désirée
+    // Calculate desired velocity
     v_in = M * f_dot_des + B * f_des + D * int_f_des;
-    // v_in=0.0f;
-  
+
     f_prev = f_des;
 
-    // Envoi de la commande au moteur
+    // Send command to motor
     pack_cmd();
   }
 
-  // Réception des données moteurs
+  // Receive motor data
   if (CAN_MSGAVAIL == CAN.checkReceive()) {
     unpack_reply();
 
@@ -518,7 +508,7 @@ void loop() {
     Serial.print(",");
     Serial.print(tau_ref / r[0]);
     Serial.print(",");
-    Serial.print(tau_EMG /r[0]);
+    Serial.print(tau_EMG / r[0]);
     Serial.print(",");
     Serial.print(f_out);
     Serial.print(",");
@@ -526,6 +516,4 @@ void loop() {
     Serial.print(",");
     Serial.println("*");
   }
-  
-    
 }
